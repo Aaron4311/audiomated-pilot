@@ -1,0 +1,28 @@
+## .NET
+bin/
+obj/
+publish/
+*.user
+
+## Installer build output
+installer/publish/
+installer/output/
+installer/*.log
+
+## Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Test / coverage
+*.trx
+TestResults/
+
+## OS
+Thumbs.db
+.DS_Store
+
+## Claude Code local settings (machine-specific)
+.claude/settings.local.json
