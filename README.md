@@ -32,7 +32,7 @@ WinUI 3 (unpackaged) needs the Windows App SDK bootstrapper and more moving part
 
 ### Why no classic Windows Service
 
-A traditional SCM-registered Windows Service runs in Session 0, which is isolated from the interactive desktop session. The Core Audio default-endpoint APIs are **per user session** — a Session 0 service cannot reliably read or change the logged-in user's default device. Instead, `Audio.Service` is built as a windowless (`OutputType=WinExe`) console-less executable, launched via a **Task Scheduler task that triggers at logon of the actual user account** (not "run whether user is logged on or not," which would reintroduce the same Session 0 problem).
+A traditional SCM-registered Windows Service runs in Session 0, which is isolated from the interactive desktop session. The Core Audio default-endpoint APIs are **per user session** — a Session 0 service cannot reliably read or change the logged-in user's default device. Instead, `Audio.Service` is built as a windowless (`OutputType=WinExe`) console-less executable, launched via a **Startup-folder shortcut for the current user** (not a Windows Service, and not Task Scheduler — some machines silently refuse to create `ONLOGON`/`RL LIMITED` scheduled tasks even for a trivial executable, for reasons unrelated to this app; a Startup shortcut needs no Task Scheduler API call at all and runs in the same interactive session either way).
 
 ## Requirements
 
@@ -47,8 +47,8 @@ Download `AudiomatedPilotSetup-<version>.exe` from [Releases](../../releases) an
 
 - Installs to `%LOCALAPPDATA%\Programs\Audiomated Pilot` (no admin rights required)
 - Adds a Start Menu shortcut for the GUI
-- Registers the background watcher as a per-user Task Scheduler task (see [Background watcher](#background-watcher-auto-revert) for why it's a scheduled task and not a classic Windows Service)
-- Ships a clean uninstaller (Start Menu → Uninstall Audiomated Pilot) that also stops and removes the scheduled task
+- Registers the background watcher via a per-user Startup-folder shortcut (see [Background watcher](#background-watcher-auto-revert) for why it's a Startup shortcut and not a classic Windows Service or Task Scheduler task)
+- Ships a clean uninstaller (Start Menu → Uninstall Audiomated Pilot) that also stops the watcher and removes the shortcut
 
 No installer prerequisites — each executable is published self-contained, so the .NET 8 runtime doesn't need to be installed separately.
 
@@ -160,28 +160,24 @@ These apply a saved profile of the same name — create them first with `--save-
 
 ## Background watcher (auto-revert)
 
-`Audio.Service` runs the same watch logic as `Audio.CLI --watch`, but windowless, via [`IMMNotificationClient`](https://learn.microsoft.com/windows/win32/api/mmdeviceapi/nn-mmdeviceapi-immnotificationclient) — a real-time COM callback, not polling. On any default-device change, it compares against `config.json` and reverts if something else changed it out from under you.
+`Audio.Service` waits briefly at startup (letting other audio drivers settle), applies `config.json` once, then runs the same watch logic as `Audio.CLI --watch` — windowless, via [`IMMNotificationClient`](https://learn.microsoft.com/windows/win32/api/mmdeviceapi/nn-mmdeviceapi-immnotificationclient), a real-time COM callback, not polling. On any default-device change, it compares against `config.json` and reverts if something else changed it out from under you. The startup apply matters on its own: without it, a device Windows or a driver already picked *before* the watcher started would never get corrected, since watch mode only reacts to changes that happen after it's running.
 
-To install it as a persistent, silent, per-user background task:
+To install it as a persistent, silent, per-user background process:
 
 ```powershell
 dotnet publish src/Audio.Service/Audio.Service.csproj -c Release -o src/Audio.Service/publish
 
 $exePath = "<repo>\src\Audio.Service\publish\Audio.Service.exe"
-$userId  = "$env:USERDOMAIN\$env:USERNAME"
-
-$action    = New-ScheduledTaskAction -Execute $exePath -WorkingDirectory (Split-Path $exePath)
-$trigger   = New-ScheduledTaskTrigger -AtLogOn -User $userId
-$settings  = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
-             -ExecutionTimeLimit (New-TimeSpan -Days 0) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-$principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
-
-Register-ScheduledTask -TaskName "Audiomated Pilot Watcher" -Action $action -Trigger $trigger `
-    -Settings $settings -Principal $principal `
-    -Description "Auto-reverts hijacked default audio devices back to the saved config.json profile in real time."
+$shell   = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut("$([Environment]::GetFolderPath('Startup'))\Audiomated Pilot Watcher.lnk")
+$shortcut.TargetPath = $exePath
+$shortcut.WorkingDirectory = Split-Path $exePath
+$shortcut.Save()
 ```
 
-Remove it with `Unregister-ScheduledTask -TaskName "Audiomated Pilot Watcher"`.
+This drops a shortcut in your per-user Startup folder, which Windows launches at every logon in your own interactive session — no Task Scheduler involved. (An earlier version of the installer used a Task Scheduler task instead; some machines silently refuse to create `ONLOGON`/`RL LIMITED` tasks even for a trivial executable, for reasons unrelated to this app, so 1.0.2+ uses a Startup shortcut instead, which needs no special API or privilege.)
+
+Remove it by deleting `Audiomated Pilot Watcher.lnk` from `shell:startup`.
 
 ## Project layout
 
